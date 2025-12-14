@@ -14,7 +14,7 @@ EMAIL_REGEX = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 # 도메인별 예외 정책 (고정)
 # - mode: "exact" (정확히 value글자), "min" (value글자 이상)
 DOMAIN_LOCAL_LENGTH_RULES = {
-    "naver.com": {"mode": "exact", "value": 5},  # @naver.com 이면 정확히 5글자
+    "naver.com": {"mode": "min", "value": 5},  # @naver.com 이면  5글자 이상
     "daum.net": {"mode": "min", "value": 3},     # @daum.net 이면 3글자 이상
 }
 
