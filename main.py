@@ -188,7 +188,7 @@ def run_app():
         step=1,
     )
 
-    st.sidebar.caption("- naver.com: 정확히 5자 (고정)")
+    st.sidebar.caption("- naver.com: 5자 이상 (고정)")
     st.sidebar.caption("- daum.net: 3자 이상 (고정)")
     st.sidebar.caption("- 그 외 도메인: 위에서 설정한 최소 글자수 이상")
 
@@ -279,3 +279,4 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
