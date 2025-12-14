@@ -1,4 +1,3 @@
-
 import re
 import os
 from io import BytesIO
@@ -11,8 +10,18 @@ import streamlit as st
 # 1. 이메일 문법 검사용 정규식 (1차 필터)
 EMAIL_REGEX = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 
-# 최소 아이디 길이 조건 (로컬파트 @ 앞)
-MIN_LOCAL_LENGTH = 5  # 여기 값만 바꾸면 정책 변경 가능
+# =========================
+# [로컬파트(@ 앞) 길이 정책]
+# =========================
+# 디폴트 정책: "그 외 도메인은 5글자 이상" / 유저가 수정 가능
+DEFAULT_MIN_LOCAL_LENGTH = 5  # <- 여기만 바꾸면 디폴트 최소 글자수 정책 변경 가능
+
+# 도메인별 예외 정책
+# - mode: "exact" (정확히 value글자), "min" (value글자 이상)
+DOMAIN_LOCAL_LENGTH_RULES = {
+    "naver.com": {"mode": "exact", "value": 5},  # @naver.com 이면 5글자(정확히)
+    "daum.net": {"mode": "min", "value": 3},     # @daum.net 이면 3글자 이상
+}
 
 
 def check_syntax(email: str) -> bool:
@@ -26,6 +35,18 @@ def check_syntax(email: str) -> bool:
     if not email:
         return False
     return EMAIL_REGEX.match(email) is not None
+
+
+def get_local_length_rule(domain: str) -> dict:
+    """
+    도메인별 로컬파트 길이 규칙 조회 함수임
+    - 매칭되는 도메인이 있으면 해당 규칙 반환
+    - 없으면 디폴트(min, DEFAULT_MIN_LOCAL_LENGTH) 반환
+    """
+    domain = (domain or "").strip().lower()
+    if domain in DOMAIN_LOCAL_LENGTH_RULES:
+        return DOMAIN_LOCAL_LENGTH_RULES[domain]
+    return {"mode": "min", "value": DEFAULT_MIN_LOCAL_LENGTH}
 
 
 def check_mx_or_a(domain: str, timeout: float = 3.0) -> (bool, str):
@@ -67,7 +88,10 @@ def validate_email_basic(email: str) -> dict:
     """
     정규식 + DNS(MX/A) 기반 기본 유효성 검증.
     1) 전체 결과 한국어
-    2) @ 앞 글자수 <= MIN_LOCAL_LENGTH 이면 미유효 처리
+    2) 도메인별 로컬파트(@ 앞) 길이 조건 적용
+       - naver.com: exact 5
+       - daum.net: min 3
+       - others: min DEFAULT_MIN_LOCAL_LENGTH (기본 5, 유저 수정 가능)
     """
     result = {
         "original_email": email,
@@ -111,14 +135,27 @@ def validate_email_basic(email: str) -> dict:
     result["domain"] = domain
     result["local_length"] = len(local)
 
-    # 4) 아이디 최소 길이 검사
-    #    요구사항: @ 이전 글자수 5글자 이하도 미유효 → 길이 <= MIN_LOCAL_LENGTH 이면 불합격
-    if len(local) <= MIN_LOCAL_LENGTH:
-        result["status"] = "아이디 길이 부족"
-        result["error"] = f"최소 아이디 글자수({MIN_LOCAL_LENGTH}) 미달입니다."
-        result["detail"] = f"아이디 글자수가 {MIN_LOCAL_LENGTH}자 이하입니다."
-        # 도메인 DNS까지 볼 필요 없으므로 여기서 종료
-        return result
+    # 4) 아이디(로컬파트) 길이 검사: 도메인별 규칙 적용
+    rule = get_local_length_rule(domain)
+    mode = rule.get("mode")
+    value = int(rule.get("value", DEFAULT_MIN_LOCAL_LENGTH))
+
+    # - exact: 길이가 value와 정확히 같아야 함
+    if mode == "exact":
+        if len(local) != value:
+            result["status"] = "아이디 길이 부족"
+            result["error"] = f"{domain} 도메인은 아이디 글자수가 정확히 {value}자여야 합니다."
+            result["detail"] = f"아이디 글자수가 {len(local)}자입니다. (정확히 {value}자 필요)"
+            return result
+
+    # - min: 길이가 value 이상이어야 함
+    else:
+        # 기존 코드의 <= 비교는 정책에 따라 오류 유발 가능해서 < 로 수정함
+        if len(local) < value:
+            result["status"] = "아이디 길이 부족"
+            result["error"] = f"최소 아이디 글자수({value}) 미달입니다."
+            result["detail"] = f"아이디 글자수가 {len(local)}자입니다. ({value}자 이상 필요)"
+            return result
 
     # 5) MX/A 레코드 조회
     try:
@@ -151,6 +188,7 @@ def run_app():
 
     st.write("- 업로드 엑셀에 `mail` 컬럼 필수임")
     st.write("- 결과 파일명: 원본파일명 + `_email_valid_check_com`")
+    st.write(f"- 디폴트 로컬파트 최소 글자수: {DEFAULT_MIN_LOCAL_LENGTH}자 (코드 상단에서 변경 가능)")
 
     uploaded_file = st.file_uploader(
         "엑셀 파일 업로드 (mail 컬럼 필수)",
