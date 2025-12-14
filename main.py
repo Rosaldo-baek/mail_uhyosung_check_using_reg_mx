@@ -10,16 +10,11 @@ import streamlit as st
 # 1. 이메일 문법 검사용 정규식 (1차 필터)
 EMAIL_REGEX = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 
-# =========================
-# [로컬파트(@ 앞) 길이 정책]
-# =========================
-# 디폴트 정책: "그 외 도메인은 5글자 이상" / 유저가 수정 가능
-DEFAULT_MIN_LOCAL_LENGTH = 5  # <- 여기만 바꾸면 디폴트 최소 글자수 정책 변경 가능
 
-# 도메인별 예외 정책
+# 도메인별 예외 정책 (고정)
 # - mode: "exact" (정확히 value글자), "min" (value글자 이상)
 DOMAIN_LOCAL_LENGTH_RULES = {
-    "naver.com": {"mode": "exact", "value": 5},  # @naver.com 이면 5글자(정확히)
+    "naver.com": {"mode": "exact", "value": 5},  # @naver.com 이면 정확히 5글자
     "daum.net": {"mode": "min", "value": 3},     # @daum.net 이면 3글자 이상
 }
 
@@ -37,24 +32,26 @@ def check_syntax(email: str) -> bool:
     return EMAIL_REGEX.match(email) is not None
 
 
-def get_local_length_rule(domain: str) -> dict:
+def get_local_length_rule(domain: str, default_min_local_length: int) -> dict:
     """
     도메인별 로컬파트 길이 규칙 조회 함수임
     - 매칭되는 도메인이 있으면 해당 규칙 반환
-    - 없으면 디폴트(min, DEFAULT_MIN_LOCAL_LENGTH) 반환
+    - 없으면 디폴트(min, default_min_local_length) 반환
     """
     domain = (domain or "").strip().lower()
+
+    # 도메인 예외 규칙 우선 적용
     if domain in DOMAIN_LOCAL_LENGTH_RULES:
         return DOMAIN_LOCAL_LENGTH_RULES[domain]
-    return {"mode": "min", "value": DEFAULT_MIN_LOCAL_LENGTH}
+
+    # 그 외 도메인은 유저가 입력한 디폴트 최소 길이 적용
+    return {"mode": "min", "value": int(default_min_local_length)}
 
 
 def check_mx_or_a(domain: str, timeout: float = 3.0) -> (bool, str):
     """
     도메인에 대해 MX 레코드 → 없으면 A 레코드까지 확인.
     반환: (has_mail_server, detail_ko)
-      - has_mail_server: 메일 수신 가능성이 있는지 여부
-      - detail_ko: 한국어 설명 문자열
     """
     resolver = dns.resolver.Resolver()
     resolver.lifetime = timeout
@@ -66,12 +63,11 @@ def check_mx_or_a(domain: str, timeout: float = 3.0) -> (bool, str):
         if len(answers) > 0:
             return True, "MX 레코드가 존재합니다."
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
-        # MX 없음 또는 도메인 없음 → A 레코드 확인으로 진행
         pass
     except Exception as e:
         return False, f"MX 레코드 조회 중 오류가 발생했습니다: {e}"
 
-    # MX가 없을 때 A 레코드 확인 (일부 서버는 A만으로 메일 수신)
+    # MX가 없을 때 A 레코드 확인
     try:
         answers_a = resolver.resolve(domain, 'A')
         if len(answers_a) > 0:
@@ -84,24 +80,22 @@ def check_mx_or_a(domain: str, timeout: float = 3.0) -> (bool, str):
     return False, "해당 도메인에 MX/A 레코드가 없습니다."
 
 
-def validate_email_basic(email: str) -> dict:
+def validate_email_basic(email: str, default_min_local_length: int) -> dict:
     """
     정규식 + DNS(MX/A) 기반 기본 유효성 검증.
-    1) 전체 결과 한국어
-    2) 도메인별 로컬파트(@ 앞) 길이 조건 적용
-       - naver.com: exact 5
-       - daum.net: min 3
-       - others: min DEFAULT_MIN_LOCAL_LENGTH (기본 5, 유저 수정 가능)
+    - naver.com: exact 5
+    - daum.net: min 3
+    - others: min default_min_local_length (Streamlit 입력값)
     """
     result = {
         "original_email": email,
-        "is_valid": False,          # 최종 판단
-        "status": "검사 안 됨",       # 정상 / 문자열 아님 / 빈 값 / 문법 오류 / 아이디 길이 부족 / 도메인 오류 / DNS 오류
-        "error": None,              # 한글 설명
+        "is_valid": False,
+        "status": "검사 안 됨",
+        "error": None,
         "domain": None,
-        "has_mail_server": None,    # True / False / None(도메인 추출 실패 등)
-        "detail": None,             # MX/A 조회 상세 설명(한국어)
-        "local_length": None,       # @ 앞 글자수
+        "has_mail_server": None,
+        "detail": None,
+        "local_length": None,
     }
 
     # 1) 타입/공백 체크
@@ -135,22 +129,19 @@ def validate_email_basic(email: str) -> dict:
     result["domain"] = domain
     result["local_length"] = len(local)
 
-    # 4) 아이디(로컬파트) 길이 검사: 도메인별 규칙 적용
-    rule = get_local_length_rule(domain)
+    # 4) 로컬파트 길이 검사 (도메인별 규칙)
+    rule = get_local_length_rule(domain, default_min_local_length)
     mode = rule.get("mode")
-    value = int(rule.get("value", DEFAULT_MIN_LOCAL_LENGTH))
+    value = int(rule.get("value", default_min_local_length))
 
-    # - exact: 길이가 value와 정확히 같아야 함
     if mode == "exact":
         if len(local) != value:
             result["status"] = "아이디 길이 부족"
             result["error"] = f"{domain} 도메인은 아이디 글자수가 정확히 {value}자여야 합니다."
             result["detail"] = f"아이디 글자수가 {len(local)}자입니다. (정확히 {value}자 필요)"
             return result
-
-    # - min: 길이가 value 이상이어야 함
     else:
-        # 기존 코드의 <= 비교는 정책에 따라 오류 유발 가능해서 < 로 수정함
+        # min: value 이상
         if len(local) < value:
             result["status"] = "아이디 길이 부족"
             result["error"] = f"최소 아이디 글자수({value}) 미달입니다."
@@ -161,7 +152,6 @@ def validate_email_basic(email: str) -> dict:
     try:
         has_mail_server, detail = check_mx_or_a(domain)
     except Exception as e:
-        # dnspython 자체 예외 등
         result["status"] = "DNS 오류"
         result["error"] = "도메인 또는 메일 서버 정보를 조회하는 중 오류가 발생했습니다."
         result["detail"] = str(e)
@@ -171,12 +161,10 @@ def validate_email_basic(email: str) -> dict:
     result["detail"] = detail
 
     if not has_mail_server:
-        # 도메인 자체가 메일 수신 설정이 안 되어 있을 가능성이 큼
         result["status"] = "도메인 오류"
         result["error"] = "해당 도메인에 메일 서버(MX/A)가 없습니다."
         return result
 
-    # 여기까지 통과하면 기본 유효
     result["is_valid"] = True
     result["status"] = "정상"
     result["error"] = None
@@ -186,9 +174,27 @@ def validate_email_basic(email: str) -> dict:
 def run_app():
     st.title("이메일 유효성 검증 도구 (정규식 + DNS)")
 
+    # =========================
+    # Streamlit 입력 UI (사이드바)
+    # =========================
+    st.sidebar.header("로컬파트 길이 정책 설정")
+
+    # 유저가 바꾸는 건 "기타 도메인 디폴트 최소 길이"만
+    default_min_local_length = st.sidebar.number_input(
+        label="기타 도메인 디폴트 최소 글자수(이상)",
+        min_value=1,
+        max_value=50,
+        value=5,
+        step=1,
+    )
+
+    st.sidebar.caption("- naver.com: 정확히 5자 (고정)")
+    st.sidebar.caption("- daum.net: 3자 이상 (고정)")
+    st.sidebar.caption("- 그 외 도메인: 위에서 설정한 최소 글자수 이상")
+
     st.write("- 업로드 엑셀에 `mail` 컬럼 필수임")
     st.write("- 결과 파일명: 원본파일명 + `_email_valid_check_com`")
-    st.write(f"- 디폴트 로컬파트 최소 글자수: {DEFAULT_MIN_LOCAL_LENGTH}자 (코드 상단에서 변경 가능)")
+    st.write(f"- 현재 기타 도메인 디폴트 최소 글자수: {int(default_min_local_length)}자")
 
     uploaded_file = st.file_uploader(
         "엑셀 파일 업로드 (mail 컬럼 필수)",
@@ -221,13 +227,12 @@ def run_app():
 
             results = []
             for row_idx, email in mail_series.items():
-                info = validate_email_basic(email)
+                info = validate_email_basic(email, int(default_min_local_length))
                 info["row_index"] = row_idx
                 results.append(info)
 
             result_df = pd.DataFrame(results)
 
-            # 원본 df에 결과 join
             merged_df = df.join(result_df, how="left")
 
         # 요약 정보 표시
@@ -274,4 +279,3 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
-
